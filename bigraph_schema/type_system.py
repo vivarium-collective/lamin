@@ -10,6 +10,7 @@ import pytest
 import random
 import inspect
 import numbers
+import traceback
 import functools
 import numpy as np
 
@@ -613,35 +614,64 @@ def is_empty(value):
         return False
 
 
-def merge_any(schema, current_state, new_state, core):
+def merge_any(schema, state, update_schema, update_state, core):
     # overwrites in place!
     # TODO: this operation could update the schema (by merging a key not
     #   already in the schema) but that is not represented currently....
+    merge_schema = None
     merge_state = None
 
-    if is_empty(current_state):
-        merge_state = new_state
-
-    elif is_empty(new_state):
-        merge_state = current_state
+    if is_empty(schema):
+        merge_schema = update_schema
+    elif is_empty(update_schema):
+        merge_schema = schema
     
-    elif isinstance(new_state, dict):
-        if isinstance(current_state, dict):
-            for key, value in new_state.items():
-                if is_schema_key(key):
-                    current_state[key] = value
-                else:
-                    current_state[key] = core.merge(
-                        schema.get(key),
-                        current_state.get(key),
-                        value)
-            merge_state = current_state
-        else:
-            merge_state = new_state
+    if is_empty(state):
+        merge_state = update_state
+    elif is_empty(update_state):
+        merge_state = state
+    
     else:
-        merge_state = new_state
+        if isinstance(update_schema, dict):
+            if isinstance(schema, dict):
+                for key, subschema in update_schema.items():
+                    if is_schema_key(key):
+                        schema[key] = schema
+                    else:
+                        schema[key], state[key] = core.merge(
+                            schema.get(key),
+                            state.get(key),
+                            update_schema.get(key),
+                            value)
 
-    return merge_state
+                merge_schema = schema
+
+            else:
+                merge_schema = update_schema
+
+        if isinstance(update_state, dict):
+            if isinstance(state, dict):
+                for key, value in update_state.items():
+                    if is_schema_key(key):
+                        state[key] = value
+                    else:
+                        merge_schema[key], state[key] = core.merge(
+                            merge_schema.get(key),
+                            state.get(key),
+                            update_schema.get(key),
+                            value)
+
+                merge_state = state
+
+            else:
+                merge_state = update_state
+
+    return merge_schema, merge_state
+
+    # else:
+    #     merge_state = update_state
+
+    # return merge_state
 
     # return core.deserialize(
     #     schema,
@@ -911,10 +941,11 @@ def generate_any(core, schema, state, top_schema=None, top_state=None, path=None
                     top_state=top_state,
                     path=path+[key])
 
-                generated_schema[key] = core.resolve_schemas(
-                    schema.get(key, {}),
-                    subschema)
+                # generated_schema[key] = core.resolve_schemas(
+                #     schema.get(key, {}),
+                #     subschema)
 
+                generated_schema[key] = subschema
                 generated_state[key] = substate
 
         if path:
@@ -1885,9 +1916,17 @@ class TypeSystem(Registry):
                     for parameter in update['_type_parameters']:
                         parameter_key = f'_{parameter}'
                         if parameter in current['_type_parameters']:
-                            outcome[parameter_key] = self.resolve_schemas(
-                                current[parameter_key],
-                                update[parameter_key])
+                            if parameter_key in update:
+                                if parameter_key in current:
+                                    outcome[parameter_key] = self.resolve_schemas(
+                                        current[parameter_key],
+                                        update[parameter_key])
+                                else:
+                                    outcome[parameter_key] = update[parameter_key]
+                            else:
+                                outcome[parameter_key] = current.get(
+                                    parameter_key,
+                                    'any')
                         else:
                             outcome[parameter_key] = update[parameter_key]
                 elif key not in outcome or type_parameter_key(current, key):
@@ -2133,18 +2172,19 @@ class TypeSystem(Registry):
         return self.set_update(schema, state, update)
 
 
-    def merge(self, schema, current_state, new_state):
+    def merge(self, schema, state, update_schema, update_state):
         schema = self.access(schema)
 
         merge_function = self.choose_method(
             schema,
-            new_state,
+            update_state,
             'merge')
 
         return merge_function(
             schema,
-            current_state,
-            new_state,
+            state,
+            update_schema,
+            update_state,
             self)
 
 
@@ -2183,24 +2223,32 @@ class TypeSystem(Registry):
                 destination_schema,
                 target_schema)
 
-            if not defer:
-                result_state = self.merge(
-                    final_schema,
-                    destination_state,
-                    target_state)
-
-            else:
-                result_state = self.merge(
-                    final_schema,
+            if defer:
+                into_state = deep_merge(
                     target_state,
                     destination_state)
 
-            return self.bind(
-                schema,
-                state,
-                key,
-                final_schema,
-                result_state)
+                result_schema, result_state = self.merge(
+                    schema,
+                    state,
+                    {key: final_schema},
+                    {key: into_state})
+
+            else:
+                result_schema, result_state = self.merge(
+                    schema,
+                    state,
+                    {key: final_schema},
+                    {key: target_state})
+
+            return result_schema, result_state
+
+            # return self.bind(
+            #     schema,
+            #     state,
+            #     key,
+            #     final_schema,
+            #     result_state)
 
         else:
             path = resolve_path(path)
