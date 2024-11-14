@@ -920,21 +920,21 @@ def generate_any(core, schema, state, top_schema=None, top_state=None, path=None
 
                 generated_state[key] = substate
 
-        if path:
-            top_schema, top_state = core.set_slice(
-                top_schema,
-                top_state,
-                path,
-                generated_schema,
-                generated_state)
-        else:
-            top_state = core.merge_recur(
-                top_schema,
-                top_state,
-                generated_state)
-
     else:
         generated_schema, generated_state = schema, state
+
+    if path:
+        top_schema, top_state = core.set_slice(
+            top_schema,
+            top_state,
+            path,
+            generated_schema,
+            generated_state)
+    else:
+        top_state = core.merge_recur(
+            top_schema,
+            top_state,
+            generated_state)
 
     return generated_schema, generated_state, top_schema, top_state
 
@@ -2136,7 +2136,7 @@ class TypeSystem(Registry):
 
 
     def merge_recur(self, schema, state, update):
-        if is_empty(schema):
+        if is_empty(schema) or is_empty(state):
             merge_state = update
 
         elif is_empty(update):
@@ -3329,6 +3329,9 @@ def slice_tree(schema, state, path, core):
         schema,
         'leaf')
 
+    if is_empty(state):
+        state = {}
+
     if len(path) > 0:
         head = path[0]
         tail = path[1:]
@@ -3457,6 +3460,35 @@ def resolve_map(schema, update, core):
     return schema
 
 
+def resolve_tree(schema, update, core):
+    if schema == 'any':
+        return update
+
+    if isinstance(update, dict):
+        update_type = update.get('_type')
+        if update_type == 'tree':
+            leaf_schema = schema.get('_leaf', {})
+            leaf_update = update.get('_leaf', {})
+
+            leaf_resolved = core.resolve_schemas(
+                leaf_schema,
+                leaf_update)
+            schema['_leaf'] = leaf_resolved
+            for key, subschema in update.items():
+                if is_schema_key(key):
+                    schema[key] = update[key]
+                else:
+                    schema = core.resolve(
+                        schema,
+                        update[key])
+        else:
+            schema['_leaf'] = core.resolve(
+                schema.get('_leaf', 'any'),
+                update)
+
+    return schema
+
+
 def resolve_array(schema, update, core):
     if not '_shape' in schema:
         schema = core.access(schema)
@@ -3526,38 +3558,6 @@ def tuple_from_type(tuple_type):
 
     else:
         raise Exception(f'do not recognize this type as a tuple: {tuple_type}')
-
-
-# def resolve_tree(schema, update, core):
-#     import ipdb; ipdb.set_trace()
-
-#     if isinstance(update, dict):
-#         leaf_schema = schema.get('_leaf', {})
-
-#         if '_type' in update:
-#             if update['_type'] == 'map':
-#                 value_schema = update.get('_value', {})
-#                 leaf_schema = core.resolve_schemas(
-#                     leaf_schema,
-#                     value_schema)
-
-#             elif update['_type'] == 'tree':
-#                 for key, subschema in update.items():
-#                     if not key.startswith('_'):
-#                         leaf_schema = core.resolve_schemas(
-#                             leaf_schema,
-#                             subschema)
-#             else:
-#                 leaf_schema = core.resolve_schemas(
-#                     leaf_schema,
-#                     update)
-
-#             schema['_leaf'] = leaf_schema
-#         else:
-#             for key, subupdate in 
-
-#     return schema
-
 
 
 def dataclass_map(schema, path, core):
@@ -3903,8 +3903,6 @@ def generate_edge(core, schema, state, top_schema=None, top_state=None, path=Non
     top_schema = top_schema or schema
     top_state = top_state or state
     path = path or []
-
-    # import ipdb; ipdb.set_trace()
 
     generated_schema, generated_state, top_schema, top_state = generate_any(
         core,
@@ -4639,7 +4637,7 @@ base_type_library = {
         '_dataclass': dataclass_tree,
         '_fold': fold_tree,
         '_divide': divide_tree,
-        # '_resolve': resolve_tree,
+        '_resolve': resolve_tree,
         '_type_parameters': ['leaf'],
         '_description': 'mapping from str to some type in a potentially nested form'},
 
@@ -6607,7 +6605,7 @@ def test_slice(core):
         {'aaaa': 55.555},
         ['aaaa'])
 
-    schema, state = core.complete({}, {
+    schema, state = core.generate({}, {
         'top': {
             '_type': 'tree[list[maybe[(float|integer)~string]]]',
             'AAAA': {
@@ -6653,7 +6651,7 @@ def test_set_slice(core):
     assert float_schema['_type'] == 'map'
     assert float_state['bbbbb'] == 888.88888
 
-    schema, state = core.complete({}, {
+    schema, state = core.generate({}, {
         'top': {
             '_type': 'tree[list[maybe[(float|integer)~string]]]',
             'AAAA': {
@@ -7002,6 +7000,8 @@ def test_edge_cycle(core):
 
     # print(diff(schema_from_schema, schema_from_state))
     # print(diff(state_from_schema, state_from_state))
+
+    import ipdb; ipdb.set_trace()
 
     if schema_from_schema != schema_from_state:
         print(diff(schema_from_schema, schema_from_state))
